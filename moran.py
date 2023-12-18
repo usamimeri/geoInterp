@@ -43,7 +43,7 @@ class LocalMoranIndex(nn.Module):
         >>> lmi = LocalMoranIndex()
         >>> print(lmi(X, weights, ids))
         """
-        X_mean = torch.mean(X)
+        X_mean = X.mean()
         X_anom = X - X_mean
         X_anom_square = X_anom**2
         moran_indexes = []
@@ -63,6 +63,7 @@ class LocalMoranIndex(nn.Module):
 
 if __name__ == "__main__":
     X = torch.tensor([0, 30, 90.0])
-    weights = [[0.1, 0.9], [1.0, 0.0], [0.5, 0.5]]
+    weights = [[0.1, 0.9], [0.0, 1.0], [0.5, 0.5]]
     ids = [[1, 2], [0, 2], [0, 1]]
     print(LocalMoranIndex()(X, weights, ids))
+    import numpy as np
