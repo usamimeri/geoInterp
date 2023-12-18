@@ -7,7 +7,7 @@ class LocalMoranIndex(nn.Module):
     """
     A PyTorch module for computing Local Moran's Index for spatial data.
 
-    This module calculates the Local Moran's Index for each observation in a 
+    This module calculates the Local Moran's Index for each observation in a
     spatial dataset, which measures the degree of spatial autocorrelation.
     """
 
@@ -25,11 +25,11 @@ class LocalMoranIndex(nn.Module):
 
         Parameters:
         X (torch.Tensor): A 1D tensor of observations. Shape: (num_nodes,)
-        neighbor_weights (List[List[float]]): Weights of the neighboring points 
-            for each observation. Each sublist corresponds to the weights of 
+        neighbor_weights (List[List[float]]): Weights of the neighboring points
+            for each observation. Each sublist corresponds to the weights of
             the neighbors of an observation.
-        neighbor_ids (List[List[int]]): Indices of the neighboring points for 
-            each observation. Each sublist corresponds to the indices of the 
+        neighbor_ids (List[List[int]]): Indices of the neighboring points for
+            each observation. Each sublist corresponds to the indices of the
             neighbors of an observation.
 
         Returns:
@@ -57,7 +57,7 @@ class LocalMoranIndex(nn.Module):
             )
             I_i = (X_anom[i] * torch.sum(neighbor_weight * X_anom[neighbor_id])) / S2_i
             moran_indexes.append(I_i)
-        
+
         return torch.tensor(moran_indexes, device=X.device)
 
 
