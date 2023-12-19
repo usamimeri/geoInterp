@@ -1,6 +1,8 @@
 import time
 from functools import wraps
 from haversine import haversine_vector, Unit
+import numpy as np
+from scipy.spatial.distance import cdist
 
 
 def measure_runtime(repetitions=10):
@@ -24,7 +26,7 @@ def measure_runtime(repetitions=10):
     return decorator
 
 
-def cal_dists_matrix(X, Y=None, unit=Unit.KILOMETERS):
+def cal_haversine_dists_matrix(X, Y=None, unit=Unit.KILOMETERS):
     """
     计算地理坐标点集之间的距离矩阵。使用哈弗辛公式（Haversine formula）来计算两点之间的大圆距离。
 
@@ -47,3 +49,21 @@ def cal_dists_matrix(X, Y=None, unit=Unit.KILOMETERS):
         return haversine_vector(X, Y, comb=True, unit=unit).T
     else:
         return haversine_vector(X, X, comb=True, unit=unit)
+
+
+def cal_cos_dists_matrix(X, Y=None, origin=None):
+    """
+    origin:(2,) 参考原点，会被广播到(M,2)或者(N,2)
+    """
+
+    if origin is not None:
+        X = X - origin
+    if Y is not None:
+        raise NotImplementedError
+
+    # 用于配对矩阵的广播运算
+    return cdist(X, X, metric="cosine")
+
+
+if __name__ == "__main__":
+    print(cal_cos_dists_matrix(np.array([[10, 20], [90, 0],[0,90]])))
