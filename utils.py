@@ -1,8 +1,70 @@
 import time
 from functools import wraps
 from haversine import haversine_vector, Unit
-import numpy as np
 from scipy.spatial.distance import cdist
+import datetime
+import os
+from typing import List, Literal, Union
+import pandas as pd
+import random
+import numpy as np
+import torch
+
+
+class DataFilter:
+    """
+    根据指定时间范围选取年份下的数据
+    例如选取12-20 到 12-22 就会获取data文件夹下所有年份的对应数据集
+
+    随后可以使用迭代的方式来获取对应的数据路径
+    """
+
+    def __init__(
+        self,
+        root: str,
+        start_month: int,
+        end_month: int,
+    ) -> List[str]:
+        self.root = root
+        self.start_month = start_month
+        self.end_month = end_month
+        self.valid_file_names = []
+        self.current_index = 0
+        self.get_valid_file_name()
+
+    def parse_date_from_filename(self, filename):
+        # 假设文件名的前8个字符是日期（格式：yyyyMMdd）
+        return datetime.datetime.strptime(filename[:8], "%Y%m%d")
+
+    def is_date_within_range(
+        self,
+        file_date: datetime.datetime,
+    ) -> bool:
+        # 判断是否在指定的月份范围内，不关心哪一年
+        return self.start_month <= file_date.month <= self.end_month
+
+    def get_valid_file_name(self):
+        for root, dirs, files in os.walk(self.root):
+            if root == self.root:
+                continue
+            for file in files:
+                file_date = self.parse_date_from_filename(file)
+                if self.is_date_within_range(file_date):
+                    self.valid_file_names.append(os.path.join(root, file))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        """
+        用迭代器的方式依次读取文件名，以便放入到后续的文件读取中
+        """
+        if self.current_index < len(self.valid_file_names):
+            result = self.valid_file_names[self.current_index]
+            self.current_index += 1
+            return result
+        else:
+            raise StopIteration
 
 
 def measure_runtime(repetitions=10):
@@ -57,7 +119,7 @@ def cal_cos_dists_matrix(X, Y=None, origin=None):
     """
 
     if origin is not None:
-        X = X - origin
+        X = X - origin + 1e-10  # 避免除数为0
     if Y is not None:
         raise NotImplementedError
 
@@ -65,5 +127,126 @@ def cal_cos_dists_matrix(X, Y=None, origin=None):
     return cdist(X, X, metric="cosine")
 
 
+class DataFilter:
+    """
+    根据指定时间范围选取年份下的数据
+    例如选取12-20 到 12-22 就会获取data文件夹下所有年份的对应数据集
+
+    随后可以使用迭代的方式来获取对应的数据路径
+    """
+
+    def __init__(
+        self,
+        root: str,
+        start_month: int,
+        end_month: int,
+    ) -> List[str]:
+        self.root = root
+        self.start_month = start_month
+        self.end_month = end_month
+        self.valid_file_names = []
+        self.current_index = 0
+        self.get_valid_file_name()
+
+    def parse_date_from_filename(self, filename):
+        # 假设文件名的前8个字符是日期（格式：yyyyMMdd）
+        return datetime.datetime.strptime(filename[:8], "%Y%m%d")
+
+    def is_date_within_range(
+        self,
+        file_date: datetime.datetime,
+    ) -> bool:
+        # 判断是否在指定的月份范围内，不关心哪一年
+        return self.start_month <= file_date.month <= self.end_month
+
+    def get_valid_file_name(self):
+        for root, dirs, files in os.walk(self.root):
+            if root == self.root:
+                continue
+            for file in files:
+                file_date = self.parse_date_from_filename(file)
+                if self.is_date_within_range(file_date):
+                    self.valid_file_names.append(os.path.join(root, file))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        """
+        用迭代器的方式依次读取文件名，以便放入到后续的文件读取中
+        """
+        if self.current_index < len(self.valid_file_names):
+            result = self.valid_file_names[self.current_index]
+            self.current_index += 1
+            return result
+        else:
+            raise StopIteration
+
+
+def get_location_mask(lat: Union[float, List[float]], lon: Union[float, List[float]]):
+    """
+    用于新西兰数据生成南北半岛标签.
+    True - 给定坐标位于新西兰南半岛; False - 给定坐标位于新西兰北半岛
+    """
+
+    p1, p2 = (174.6, -41.3), (174.43, -41.1)
+    k = (p2[1] - p1[1]) / (p2[0] - p1[0])
+    b = p1[1] - k * p1[0]
+
+    if type(lat) == float:
+        return True if -k * lon + lat <= b else False
+    else:
+        return np.array(
+            [
+                True if -k * lontitude + latitude <= b else False
+                for latitude, lontitude in zip(lat, lon)
+            ]
+        )
+
+
+def read_new_zealand_data(
+    file_path: str, location: Literal["north", "south", "all"]
+) -> pd.DataFrame:
+    """
+    读取新西兰数据集，数据集以.dat结尾
+    一般列是：
+    * index：站点标签，可忽略
+    * lat：纬度
+    * lon：经度
+    * elev：高程
+    * obs：观测值
+    * CMORPH：红外数据
+    """
+    data = pd.read_csv(
+        file_path,
+        header=None,
+        names=["index", "lat", "lon", "elev", "obs", "CMORPH"],
+        sep="\s+",
+        usecols=["lat", "lon", "elev", "obs"],
+    )  # 空格长度不太一致
+
+    if location == "all":
+        return data
+    elif location == "south":
+        mask = get_location_mask(data["lat"].values, data["lon"].values)
+        return data[mask]
+    elif location == "north":
+        mask = get_location_mask(data["lat"].values, data["lon"].values)
+        mask = ~mask  # 取反
+        return data[mask]
+    else:
+        raise ValueError
+
+
+def seed_everything(seed: int):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
+
+
 if __name__ == "__main__":
-    print(cal_cos_dists_matrix(np.array([[10, 20], [90, 0],[0,90]])))
+    print(cal_cos_dists_matrix(np.array([[10, 20], [90, 0], [0, 90]])))
