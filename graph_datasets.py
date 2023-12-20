@@ -57,9 +57,14 @@ class SparseObsDataset(Dataset):
                 train_index, test_index = self._split_indices(
                     len(df), test_size=sparsity
                 )
-                dists, cdist = self._get_dists(x, train_index, test_index)
-                edge_index = self._get_edge_index(
-                    train_index, test_index, dists, self.n_neighbors, self.cdd
+                (
+                    edge_index,
+                    dists,
+                    cdist,
+                    train_weights,  # 用于计算莫兰指数的邻居权重
+                    train_neighbors,
+                ) = self._get_dists_edge_index(
+                    x, train_index, test_index, self.n_neighbors, self.cdd
                 )
                 edge_attr = self._get_edge_attr(x, edge_index, dists)
                 data = Data(
@@ -67,10 +72,12 @@ class SparseObsDataset(Dataset):
                     y=torch.from_numpy(y.astype(np.float32)),
                     edge_index=torch.from_numpy(edge_index).long(),
                     edge_attr=torch.from_numpy(edge_attr.astype(np.float32)),
-                    train_index=torch.from_numpy(train_index),
-                    test_index=torch.from_numpy(test_index),
+                    train_index=train_index,
+                    test_index=test_index,
                     dists=torch.from_numpy(dists.astype(np.float32)),
                     cdist=torch.from_numpy(cdist.astype(np.float32)),
+                    train_weights=train_weights,
+                    train_neighbors=train_neighbors,
                 )
                 torch.save(
                     data,
@@ -100,13 +107,6 @@ class SparseObsDataset(Dataset):
 
         return x, y
 
-    def _get_dists(self, x: np.ndarray, train_index, test_index):
-        # 这里假定前两列是lat和lon！
-        all_coords = x[:, 0:2]
-        dists: np.ndarray = cal_haversine_dists_matrix(all_coords)  # 全部的矩阵
-        cdist = dists[test_index, :][:, train_index]
-        return dists, cdist
-
     def _split_indices(self, n_samples, test_size, shuffle=True):
         """
         切分训练集和验证集索引
@@ -126,22 +126,33 @@ class SparseObsDataset(Dataset):
         train_index = indices[threshold:]
         return train_index, test_index
 
-    def _get_edge_index(self, train_index, test_index, dists, n_neighbors, cdd):
+    def _get_dists_edge_index(self, x, train_index, test_index, n_neighbors, cdd):
         """
         dists:(节点数,节点数) 节点数=训练节点数+测试节点数
         返回和X对应的edge_index，即edge_index的某个索引index和原来的X位置是对应的
         """
+        dists = cal_haversine_dists_matrix(x[:, 0:2])  # 全部的矩阵
+        cdist = dists[test_index, :][:, train_index]  # 配对矩阵
         adw = ADW(n_neighbors, cdd)
+        # 这样会让所有训练节点带一条self_loop
         train_neighbors = adw.get_interp_ref_points(
             dists[train_index, :][:, train_index]
-        )# 这样会让所有训练节点带一条self_loop
-        test_neighbors = adw.get_interp_ref_points(
-            dists[test_index, :][:, train_index]
-        )  # 每个测试节点的邻接点
+        )
+
+        # 每个测试节点的邻接点 对应原来未经打乱的X的索引 也S就是0代表第一行
+        test_neighbors = adw.get_interp_ref_points(cdist)
+
+        # 这里是对应到用于训练的观测值的id 因为我们传入给moran的是data.y[train_index]是经过train_index的变换的，因此我们没必要变回去
+        train_moran_neighbors=self.remove_self_neighbor(train_neighbors, list(range(len(train_neighbors))))
+        # 用于计算莫兰指数
+        train_weights = adw.get_interp_weights(
+            x[train_index, 0:2],
+            x[train_index, 0:2],
+            train_moran_neighbors,
+            dists[train_index, :][:, train_index],
+        )
         train_neighbors = [train_index[i] for i in train_neighbors]
         test_neighbors = [train_index[i] for i in test_neighbors]
-        
-
         # 构建源节点目标节点对
         neighbors = [*train_neighbors, *test_neighbors]  # 含每个节点对应邻接节点列表的列表
         indices = np.concatenate((train_index, test_index))  # 全部的索引（可能打乱后）
@@ -149,7 +160,25 @@ class SparseObsDataset(Dataset):
         edge_index = np.array(
             [np.concatenate(neighbors), np.repeat(indices, [len(a) for a in neighbors])]
         )
-        return edge_index
+        return (
+            edge_index,
+            dists,
+            cdist,
+            train_weights,
+            train_moran_neighbors,
+        )
+
+    def remove_self_neighbor(self, arr_list, elements_to_remove):
+        """
+        移除邻居中自己的标号，主要是为了计算莫兰指数时别把自己放进去计算权重
+        train_neighbors = [[1, 2, 3], [4, 5]]
+        train_index = [1, 5]
+        输出: [[2, 3], [4]]
+        """
+        return [
+            [element for element in arr if element != elements_to_remove[i]]
+            for i, arr in enumerate(arr_list)
+        ]
 
     def _get_edge_attr(self, X, edge_index, dists):
         """
@@ -176,8 +205,5 @@ class SparseObsDataset(Dataset):
 
 
 if __name__ == "__main__":
-    dataset = SparseObsDataset("dataset", "sparse_north", "north")
-    data = dataset[0]
-    print(
-        data.train_index,
-    )
+    dataset = SparseObsDataset("dataset", "sparse_south", "south")
+    print(dataset)

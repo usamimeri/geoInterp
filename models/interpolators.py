@@ -36,7 +36,7 @@ class BaseGeoInterpolator(ABC):
         n_neighbors_array[n_neighbors_array > self.n_neighbors] = self.n_neighbors
 
         # Ensure at least a minimal number of neighbors
-        n_neighbors_array[n_neighbors_array < 2] = min(self.n_neighbors // 4, 4)
+        n_neighbors_array[n_neighbors_array <= 2] = max(self.n_neighbors // 4, 4)
 
         # Sort distances and select the top neighbors
         cdist_argsort = np.argsort(cdist, axis=1)
