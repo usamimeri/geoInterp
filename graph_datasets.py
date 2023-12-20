@@ -2,11 +2,12 @@ from torch_geometric.data import Dataset, Data
 import os
 import numpy as np
 from utils import read_new_zealand_data, cal_haversine_dists_matrix
-from interpolators import ADW
+from models.interpolators import ADW
 from typing import Literal
 from tqdm import tqdm
 import pandas as pd
 import torch
+
 
 class SparseObsDataset(Dataset):
     def __init__(
@@ -171,8 +172,11 @@ class SparseObsDataset(Dataset):
 
     def len(self):
         return len(self.processed_paths)
-    
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     dataset = SparseObsDataset("dataset", "sparse_south", "south")
-    data=dataset[0]
-    print(data.train_index,)
+    data = dataset[0]
+    print(
+        data.train_index,
+    )
