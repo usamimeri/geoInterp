@@ -62,8 +62,7 @@ class LocalMoranIndex(nn.Module):
 
 
 if __name__ == "__main__":
-    X = torch.tensor([0, 30, 90.0])
+    X = torch.tensor([0, 30, 90.0]) # 观测值
     weights = [[0.1, 0.9], [0.0, 1.0], [0.5, 0.5]]
     ids = [[1, 2], [0, 2], [0, 1]]
     print(LocalMoranIndex()(X, weights, ids))
-    import numpy as np

@@ -2,6 +2,11 @@ from abc import ABC, abstractmethod
 import numpy as np
 from typing import List
 from utils import cal_cos_dists_matrix, cal_haversine_dists_matrix
+import torch
+from torch_geometric.nn import GCNConv, GATConv
+import torch.nn.functional as F
+from torch import nn
+from SparseConvConfig import SparseConv
 
 
 class BaseGeoInterpolator(ABC):
@@ -25,9 +30,7 @@ class BaseGeoInterpolator(ABC):
         :return: A list of arrays, each containing indices of the reference points for a test point.
         """
         neighbor_ids = []
-        n_neighbors_array = np.sum(
-            cdist < self.cdd, axis=1
-        )  
+        n_neighbors_array = np.sum(cdist < self.cdd, axis=1)
 
         # Limit the number of neighbors to 'n_neighbors'
         n_neighbors_array[n_neighbors_array > self.n_neighbors] = self.n_neighbors
@@ -106,24 +109,123 @@ class ADW(BaseGeoInterpolator):
         return neighbor_weights
 
 
+class GATModel(torch.nn.Module):
+    def __init__(self, num_node_features):
+        super(GATModel, self).__init__()
+        self.conv1 = GATConv(num_node_features, 48)
+        self.conv2 = GATConv(48, 60)
+        self.conv3 = GATConv(60, 1)
+
+    def forward(self, x, edge_index, edge_attr, *args):
+        x = F.relu(self.conv1(x, edge_index, edge_attr))
+        x = F.relu(self.conv2(x, edge_index, edge_attr))
+        x = self.conv3(x, edge_index)
+        return x.flatten()
+
+
+class GCNModel(torch.nn.Module):
+    def __init__(self, num_node_features):
+        super(GCNModel, self).__init__()
+        self.conv1 = GCNConv(num_node_features, 48)
+        self.conv2 = GCNConv(48, 60)
+        self.conv3 = GCNConv(60, 1)
+
+    def forward(self, x, edge_index, *args):
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.relu(self.conv2(x, edge_index))
+        x = self.conv3(x, edge_index)
+        return x.flatten()
+
+
+class AGAIN(nn.Module):
+    def __init__(
+        self,
+        in_dim,
+        h1_dim,
+        h2_dim=25,
+        threshold=0.03,
+        scale=30,
+        edge_dim=None,
+        dropout=0.3,
+        num_heads=8,
+    ):
+        super(AGAIN, self).__init__()
+        self.individual1 = nn.Linear(in_dim, h1_dim)
+        self.individual2 = nn.Linear(h1_dim, 1)
+        self.bn1 = nn.BatchNorm1d(in_dim)
+        self.bn2 = nn.BatchNorm1d(in_dim)
+        self.bn3 = nn.BatchNorm1d(in_dim)
+        self.bn4 = nn.BatchNorm1d(in_dim)
+        self.relu = nn.ReLU(inplace=True)
+        self.num_heads = num_heads
+        if scale:
+            scale = 1 / torch.log(torch.Tensor([scale]))
+        else:
+            scale = torch.Tensor([1])
+
+        self.sparseConv1 = SparseConv(
+            in_channels=in_dim,
+            out_channels=h1_dim,
+            heads=num_heads,
+            dropout=dropout,
+            edge_dim=edge_dim,
+            threshold=threshold,
+            idx=0,
+            scale=scale,
+        )
+
+        self.sparseConv2 = SparseConv(
+            in_channels=in_dim,
+            out_channels=h2_dim,
+            heads=num_heads,
+            dropout=dropout,
+            edge_dim=edge_dim,
+            threshold=threshold,
+            idx=1,
+            scale=scale,
+        )
+
+        self.fc1 = nn.Linear(h1_dim * num_heads, in_dim)
+        self.fc2 = nn.Linear(in_dim, in_dim)
+        self.fc3 = nn.Linear(h2_dim * num_heads, in_dim)
+        self.fc4 = nn.Linear(in_dim, in_dim)
+        self.fc5 = nn.Linear(in_dim, 1)
+        self.elu = nn.LeakyReLU(negative_slope=0.01, inplace=False)
+
+    def forward(self, x, edge_index, edge_attr, sparse_train=True):
+        self.sparseConv1.sparse_train = sparse_train
+        self.sparseConv2.sparse_train = sparse_train
+        x_src = self.sparseConv1(
+            x=x, edge_index=edge_index, edge_attr=edge_attr
+        )  # h1_dim*num_heads
+        x_src = self.elu(self.fc1(x_src))  # in_dim
+        x_src += x  # in_dim
+        x_src = self.bn1(x_src)  # in_dim
+
+        x_src = self.elu(self.fc2(x_src))  # in_dim
+        x_src += x  # in_dim
+        x_src = self.bn2(x_src)  # in_dim
+
+        x_src = self.sparseConv2(
+            x=x_src, edge_index=edge_index, edge_attr=edge_attr
+        )  # h2_dim*num_heads
+        x_src = self.elu(self.fc3(x_src))  # in_dim
+        x_src += x  # in_dim
+        x_src = self.bn3(x_src)  # in_dim
+
+        x_src = self.elu(self.fc4(x_src))  # in_dim
+        x_src += x  # in_dim
+        x_src = self.bn4(x_src)  # in_dim
+        y = self.fc5(x_src).flatten()  # 1
+        return y
+
+
 class KCN:
     pass
 
 
-class GAT:
-    pass
-
-
-class AGAIN:
-    pass
-
-
-class GCN:
-    pass
-
-
 if __name__ == "__main__":
-    train_coords = np.array([[10,10], [20, 20]])
+    train_coords = np.array([[10, 10], [20, 20]])
     test_coords = np.array([[10, 10]])
     cdist = cal_haversine_dists_matrix(test_coords, train_coords)
     train_values = np.array([20, 100])

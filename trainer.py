@@ -1,68 +1,155 @@
-from torch import nn
+from typing import Literal
 import torch
-import torch_geometric
-from models.interpolators import ADW
+from models.interpolators import ADW, AGAIN, GATModel, GCNModel
 import numpy as np
 import pandas as pd
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-criterion = nn.MSELoss(reduction="mean").to(device)
-
+from torch_geometric.data import Data
+from graph_datasets import SparseObsDataset
 
 class StatisticInterpTrainer:
     """
-    传统统计方法类的推理，由于是统计方法没有学习率之类训练参数
-
-    - 节点特征x：`(节点数,特征数)`（没有打乱）
-        - 节点标签y：`(节点数,)`（没有打乱）
-        - 训练集索引：train_index`(训练节点数,)`
-        - 测试集索引：test_index`(测试节点数,)`
-        - 配对距离矩阵cdists：`（测试节点数，训练节点数）`
-
-    输出：
-    1. 测试集上的验证集损失RMSE
-    2. dataframe，字段为：测试集索引，纬度、经度、真实值、模型预测值
+    传统统计方法类的推理，由于是统计方法没有学习率之类训练参数。
     """
 
-    def __init__(
-        self,
-        model,
-        x: torch.Tensor,
-        y: torch.Tensor,
-        train_index: torch.Tensor,
-        test_index: torch.Tensor,
-        cdist: torch.Tensor,
-    ) -> None:
-        self.train_coords = x[train_index, 0:2].numpy()
-        self.test_coords = x[test_index, 0:2].numpy()
-        self.cdist = cdist.numpy()
-        self.train_index = train_index.numpy()
-        self.test_index = test_index.numpy()
+    def __init__(self, model) -> None:
         self.model = model
-        self.y = y.numpy()
 
-    def calculate(self):
-        y_true = self.y[self.test_index]
-        y_pred = self.model.interpolate(
-            self.train_coords, self.test_coords, self.y[self.train_index], self.cdist
-        )
-        rmse = np.sqrt(np.mean((y_pred - y_true) ** 2))
-        df = pd.DataFrame(columns=["test_index", "lat", "lon", "obs", "pred"])
-        df["test_index"] = self.test_index
-        df[["lat", "lon"]] = self.test_coords
-        df["obs"] = y_true
-        df["pred"] = y_pred
+    def calculate(self, data: Data):
+        """
+        计算模型在测试集上的性能。
+        参数:
+            data (Data): 包含节点特征、标签和索引的PyTorch Geometric Data对象。
+        返回:
+            tuple: 包含RMSE和预测结果的dataframe。
+        """
+        y_true, y_pred = self._get_true_and_pred_values(data)
+        rmse = self._calculate_rmse(y_true, y_pred)
+        df = self._create_dataframe(data, y_true, y_pred)
 
         return rmse, df
 
+    def _get_true_and_pred_values(self, data: Data):
+        """
+        从数据中获取真实值和预测值。
+        """
+        y_true = data.y[data.test_index].numpy()
+        y_pred = self.model.interpolate(
+            data.x[data.train_index, 0:2].numpy(),
+            data.x[data.test_index, 0:2].numpy(),
+            data.y[data.train_index].numpy(),
+            data.cdist.numpy(),
+        )
+        return y_true, y_pred
+
+    def _calculate_rmse(self, y_true, y_pred):
+        return np.sqrt(np.mean((y_pred - y_true) ** 2))
+
+    def _create_dataframe(self, data: Data, y_true, y_pred):
+        """
+        创建包含测试集索引、坐标、观测值和预测值的dataframe。
+        """
+        df = pd.DataFrame(
+            {
+                "test_index": data.test_index.numpy(),
+                "lat": data.x[data.test_index, 0].numpy(),
+                "lon": data.x[data.test_index, 1].numpy(),
+                "obs": y_true,
+                "pred": y_pred,
+            }
+        )
+
+        return df
+
+
+class GNNTrainer:
+    def __init__(
+        self,
+        model_type: Literal["GAT", "GCN", "AGAIN"],
+        device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
+        max_epochs=200,
+    ) -> None:
+        self.model_type = model_type
+        self.criterion = torch.nn.MSELoss().to(device)
+        self.max_epochs = max_epochs
+        self.device = device
+
+    def calculate(self, data: Data):
+        if self.model_type == "GAT":
+            model = GATModel(data.x.shape[1])
+        elif self.model_type == "GCN":
+            model = GCNModel(data.x.shape[1])
+        elif self.model_type == "AGAIN":
+            model = AGAIN(
+                in_dim=data.x.shape[1],
+                edge_dim=data.edge_attr.shape[1],
+                num_heads=6,
+                h1_dim=48,
+                h2_dim=60,
+                threshold=0.03,
+            )
+        else:
+            raise NotImplementedError
+
+        best_rmse_loss = 1e9
+        best_y_pred = None
+
+        model = model.to(self.device)
+        data = data.to(self.device)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=5e-4)
+
+        for epoch in range(self.max_epochs):
+            optimizer.zero_grad()
+            y_pred = model(data.x, data.edge_index, data.edge_attr)
+            loss = self.criterion(data.y[data.train_index], y_pred[data.train_index])
+
+            if (epoch + 1) % 20 == 0:
+                model.eval()
+                y_test = model(
+                    data.x,
+                    data.edge_index,
+                    data.edge_attr,
+                    False, # Sparse Train,Only available to AGAIN
+                )
+                y_test = model(data.x, data.edge_index, data.edge_attr)
+                loss_test = self.criterion(
+                    data.y[data.test_index], y_test[data.test_index]
+                ).detach().sqrt().item()
+
+                if best_rmse_loss > loss_test:
+                    best_rmse_loss = loss_test
+                    best_y_pred = y_test[data.test_index]
+                model.train()
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=20, norm_type=2)
+            optimizer.step()
+
+        df = self._create_dataframe(data, best_y_pred.detach().cpu().numpy())
+        return best_rmse_loss, df
+
+    def _create_dataframe(self, data: Data, y_pred):
+        """
+        创建包含测试集索引、坐标、观测值和预测值的dataframe。
+        """
+        data = data.cpu()
+        df = pd.DataFrame(
+            {
+                "test_index": data.test_index.numpy(),
+                "lat": data.x[data.test_index, 0].numpy(),
+                "lon": data.x[data.test_index, 1].numpy(),
+                "obs": data.y[data.test_index].numpy(),
+                "pred": y_pred,
+            }
+        )
+
+        return df
+
 
 if __name__ == "__main__":
-    from graph_datasets import SparseObsDataset
+    
 
     dataset = SparseObsDataset("dataset", "sparse_north", "north")
     data = dataset[4]
-    adw = ADW()
-    st_trainer = StatisticInterpTrainer(
-        adw, data.x, data.y, data.train_index, data.test_index, data.cdist
-    )
-    print(st_trainer.calculate())
+    again_trainer = GNNTrainer("GCN")
+    print(again_trainer.calculate(data))

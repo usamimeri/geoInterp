@@ -134,12 +134,13 @@ class SparseObsDataset(Dataset):
         adw = ADW(n_neighbors, cdd)
         train_neighbors = adw.get_interp_ref_points(
             dists[train_index, :][:, train_index]
-        )
+        )# 这样会让所有训练节点带一条self_loop
         test_neighbors = adw.get_interp_ref_points(
             dists[test_index, :][:, train_index]
         )  # 每个测试节点的邻接点
         train_neighbors = [train_index[i] for i in train_neighbors]
         test_neighbors = [train_index[i] for i in test_neighbors]
+        
 
         # 构建源节点目标节点对
         neighbors = [*train_neighbors, *test_neighbors]  # 含每个节点对应邻接节点列表的列表
