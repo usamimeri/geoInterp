@@ -175,7 +175,7 @@ class SparseObsDataset(Dataset):
 
 
 if __name__ == "__main__":
-    dataset = SparseObsDataset("dataset", "sparse_south", "south")
+    dataset = SparseObsDataset("dataset", "sparse_north", "north")
     data = dataset[0]
     print(
         data.train_index,
