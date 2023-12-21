@@ -9,6 +9,37 @@ import pandas as pd
 import torch
 
 
+class DatasetSplitter:
+    """
+    数据划分器，但会保存之前的索引，每次切新测试集时会完全包含之前的测试集
+    """
+
+    def __init__(self, n_samples, shuffle=True):
+        self.stored_indices = np.arange(n_samples)
+        if shuffle:
+            np.random.shuffle(self.stored_indices)
+
+        self.n_samples = n_samples
+
+    def split_indices(self, test_size):
+        """
+        切分训练集和验证集索引
+        """
+
+        if 0 < test_size < 1:
+            # 比例
+            threshold = int(self.n_samples * test_size)
+            if threshold <= 0:
+                threshold = 1
+        elif 1 <= test_size < self.n_samples:
+            # 直接指定测试集数目
+            threshold = test_size
+
+        train_index = self.stored_indices[threshold:]
+        test_index = self.stored_indices[:threshold]
+        return train_index, test_index
+
+
 class SparseObsDataset(Dataset):
     def __init__(
         self,
@@ -53,10 +84,9 @@ class SparseObsDataset(Dataset):
         for raw_file_path in tqdm(self.raw_paths, desc="Processing"):
             df = read_new_zealand_data(raw_file_path, self.location)
             x, y = self._get_x_y(df, feature_cols=["lat", "lon", "elev"], obs_col="obs")
+            spliter = DatasetSplitter(len(df), shuffle=True)
             for sparsity in self.sparsities:
-                train_index, test_index = self._split_indices(
-                    len(df), test_size=sparsity
-                )
+                train_index, test_index = spliter.split_indices(test_size=sparsity)
                 (
                     edge_index,
                     dists,
@@ -107,24 +137,24 @@ class SparseObsDataset(Dataset):
 
         return x, y
 
-    def _split_indices(self, n_samples, test_size, shuffle=True):
-        """
-        切分训练集和验证集索引
-        """
-        indices = np.arange(n_samples)
-        if shuffle:
-            np.random.shuffle(indices)
-        if 0 < test_size < 1:
-            # 比例
-            threshold = int(n_samples * test_size)
-            if threshold <= 0:
-                threshold = 1
-        elif 1 <= test_size < n_samples:
-            # 直接指定测试集数目
-            threshold = test_size
-        test_index = indices[:threshold]
-        train_index = indices[threshold:]
-        return train_index, test_index
+    # def _split_indices(self, n_samples, test_size, shuffle=True):
+    #     """
+    #     切分训练集和验证集索引
+    #     """
+    #     indices = np.arange(n_samples)
+    #     if shuffle:
+    #         np.random.shuffle(indices)
+    #     if 0 < test_size < 1:
+    #         # 比例
+    #         threshold = int(n_samples * test_size)
+    #         if threshold <= 0:
+    #             threshold = 1
+    #     elif 1 <= test_size < n_samples:
+    #         # 直接指定测试集数目
+    #         threshold = test_size
+    #     test_index = indices[:threshold]
+    #     train_index = indices[threshold:]
+    #     return train_index, test_index
 
     def _get_dists_edge_index(self, x, train_index, test_index, n_neighbors, cdd):
         """
@@ -143,7 +173,9 @@ class SparseObsDataset(Dataset):
         test_neighbors = adw.get_interp_ref_points(cdist)
 
         # 这里是对应到用于训练的观测值的id 因为我们传入给moran的是data.y[train_index]是经过train_index的变换的，因此我们没必要变回去
-        train_moran_neighbors=self.remove_self_neighbor(train_neighbors, list(range(len(train_neighbors))))
+        train_moran_neighbors = self.remove_self_neighbor(
+            train_neighbors, list(range(len(train_neighbors)))
+        )
         # 用于计算莫兰指数
         train_weights = adw.get_interp_weights(
             x[train_index, 0:2],

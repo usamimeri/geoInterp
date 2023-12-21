@@ -1,6 +1,6 @@
 from typing import Literal
 import torch
-from models.interpolators import ADW, AGAIN, GATModel, GCNModel
+from models.interpolators import ADW, AGAIN, GATModel, GCNModel, KCN
 import numpy as np
 import pandas as pd
 from torch_geometric.data import Data
@@ -68,7 +68,7 @@ class StatisticInterpTrainer:
 class GNNTrainer:
     def __init__(
         self,
-        model_type: Literal["GAT", "GCN", "AGAIN"],
+        model_type: Literal["GAT", "GCN", "KCN", "AGAIN"],
         device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
         max_epochs=100,
     ) -> None:
@@ -92,6 +92,8 @@ class GNNTrainer:
                 h2_dim=60,
                 threshold=0.03,
             )
+        elif self.model_type == "KCN":
+            model = KCN(10, device, data)
         else:
             raise NotImplementedError
 
@@ -101,45 +103,64 @@ class GNNTrainer:
         model = model.to(self.device)
         data = data.to(self.device)
 
-        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=5e-4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=5e-4)
 
         for epoch in range(self.max_epochs):
             optimizer.zero_grad()
-            y_pred = model(data.x, data.edge_index, data.edge_attr)
+            if self.model_type == "KCN":
+                y_pred = model(data.train_index)
+            else:
+                y_pred = model(data.x, data.edge_index, data.edge_attr)
 
             if self.model_type == "AGAIN":
-                moran = self.moran(
-                    y_pred[data.train_index] - data.y[data.train_index],
-                    data.train_weights,
-                    data.train_neighbors,
+                # moran = self.moran(
+                #     y_pred[data.train_index] - data.y[data.train_index],
+                #     data.train_weights,
+                #     data.train_neighbors,
+                # )
+                loss = self.criterion(
+                    data.y[data.train_index], y_pred[data.train_index]
                 )
-                loss = (
-                    self.criterion(data.y[data.train_index], y_pred[data.train_index])
-                    + 0.05 * moran
-                )
+                # + 0.05 * moran
+            elif self.model_type == "KCN":
+                loss = self.criterion(data.y[data.train_index].reshape(-1, 1), y_pred)
             else:
                 loss = self.criterion(
                     data.y[data.train_index], y_pred[data.train_index]
                 )
 
-            if (epoch + 1) % 20 == 0:
+            if (epoch + 1) % 10 == 0:
                 model.eval()
-                y_test = model(
-                    data.x,
-                    data.edge_index,
-                    data.edge_attr,
-                    False,  # Sparse Train,Only available to AGAIN
-                )
-                y_test = model(data.x, data.edge_index, data.edge_attr)
-                loss_test = (
-                    self.criterion(data.y[data.test_index], y_test[data.test_index])
-                    .detach()
-                    .sqrt()
-                    .item()
-                )
+                """
+                需要改进这部分代码
+                """
+                if self.model_type == "KCN":
+                    y_test = model(data.test_index)
+                    loss_test = (
+                        self.criterion(data.y[data.test_index].reshape(-1, 1), y_test)
+                        .detach()
+                        .sqrt()
+                        .item()
+                    )
+                else:
+                    y_test = model(
+                        data.x,
+                        data.edge_index,
+                        data.edge_attr,
+                        False,  # Sparse Train,Only available to AGAIN
+                    )
+                    loss_test = (
+                        self.criterion(data.y[data.test_index], y_test[data.test_index])
+                        .detach()
+                        .sqrt()
+                        .item()
+                    )
                 if best_rmse_loss > loss_test:
                     best_rmse_loss = loss_test
-                    best_y_pred = y_test[data.test_index]
+                    if self.model_type == "KCN":
+                        best_y_pred = y_test
+                    else:
+                        best_y_pred = y_test[data.test_index]
                 model.train()
 
             loss.backward()
@@ -167,57 +188,57 @@ class GNNTrainer:
         return df
 
 
+from argparse import ArgumentParser
+from tqdm import tqdm
+
+parser = ArgumentParser()
+parser.add_argument("--model_type", type=str, choices=["GAT", "GCN", "AGAIN", "ADW"])
+parser.add_argument("--max_epochs", type=int, default=150)
+parser.add_argument("--location", type=str)
+parser.add_argument("--log_step", type=int, default=50)
+
 if __name__ == "__main__":
-    location = "south"
-    # dataset = SparseObsDataset("dataset", "sparse_north", "north")
-    dataset = SparseObsDataset("dataset", f"sparse_{location}", location)
+    args = parser.parse_args()
     print("Initializing……")
-    gat_trainer = GNNTrainer("GAT")
-    gcn_trainer = GNNTrainer("GCN")
-    again_trainer = GNNTrainer("AGAIN")
-    adw_trainer = StatisticInterpTrainer(ADW())
-    trainers = {
-        "GAT": gat_trainer,
-        "GCN": gcn_trainer,
-        "AGAIN": again_trainer,
-        "ADW": adw_trainer,
-    }
+    dataset = SparseObsDataset("dataset", f"sparse_{args.location}", args.location)
+
+    trainer = (
+        GNNTrainer(args.model_type, max_epochs=args.max_epochs)
+        if args.model_type in ["GCN", "GAT", "AGAIN"]
+        else StatisticInterpTrainer(ADW(n_neighbors=20, cdd=60, m=4))
+    )
 
     logs = {
-        "GAT": {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
-        "GCN": {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
-        "AGAIN": {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
-        "ADW": {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
+        args.model_type: {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
     }
 
     device = torch.device("cuda")
 
     sparsities = ["10%", "20%", "30%", "40%", "50%"] * len(dataset.raw_file_names)
-    output_dir = f"outputs_{location}_sparse"
-    for model_name in list(trainers.keys()):
-        for sparsity in sparsities[:5]:
-            os.makedirs(
-                os.path.join(output_dir, model_name, sparsity),
-                exist_ok=True,
-            )
+    output_dir = f"outputs_{args.location}_sparse"
+    for sparsity in sparsities[:5]:
+        os.makedirs(
+            os.path.join(output_dir, args.model_type, sparsity),
+            exist_ok=True,
+        )
     print("Done!")
-    for i in range(len(dataset.processed_file_names)):
+
+    for i in tqdm(range(len(dataset.processed_file_names)), desc=args.model_type):
         data = dataset[i].to(device)
-        print("Using ", dataset.processed_file_names[i])
-        for model_name in list(trainers.keys()):
-            trainer = trainers[model_name]
-            rmse, df = trainer.calculate(data)
-            print(model_name, rmse)
-            logs[model_name][sparsities[i]].append(rmse)
-            df.to_csv(
-                os.path.join(
-                    output_dir,
-                    model_name,
-                    sparsities[i],
-                    f"{dataset.processed_file_names[i].split('.')[0]}.csv",
-                ),
-                index=False,
-            )
-        if i % 20 == 0:
-            with open(os.path.join(output_dir, "logs.json"), "w") as f:
-                json.dump(logs, f)
+        rmse, df = trainer.calculate(data)
+        logs[args.model_type][sparsities[i]].append(rmse)
+        df.to_csv(
+            os.path.join(
+                output_dir,
+                args.model_type,
+                sparsities[i],
+                f"{dataset.processed_file_names[i].split('.')[0]}.csv",
+            ),
+            index=False,
+        )
+        if (i % args.log_step) == 0:
+            with open(os.path.join(output_dir, args.model_type, "logs.json"), "w") as f:
+                json.dump(logs, f, indent=4)
+
+    with open(os.path.join(output_dir, args.model_type, "logs.json"), "w") as f:
+        json.dump(logs, f, indent=4)
