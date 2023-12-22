@@ -93,7 +93,7 @@ class GNNTrainer:
                 threshold=0.03,
             )
         elif self.model_type == "KCN":
-            model = KCN(10, device, data)
+            model = KCN(10, device, data.cpu())
         else:
             raise NotImplementedError
 
@@ -102,7 +102,6 @@ class GNNTrainer:
 
         model = model.to(self.device)
         data = data.to(self.device)
-
         optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=5e-4)
 
         for epoch in range(self.max_epochs):
@@ -135,9 +134,9 @@ class GNNTrainer:
                 需要改进这部分代码
                 """
                 if self.model_type == "KCN":
-                    y_test = model(data.test_index)
+                    y_test = model(data.test_index).flatten()
                     loss_test = (
-                        self.criterion(data.y[data.test_index].reshape(-1, 1), y_test)
+                        self.criterion(data.y[data.test_index], y_test)
                         .detach()
                         .sqrt()
                         .item()
@@ -192,7 +191,9 @@ from argparse import ArgumentParser
 from tqdm import tqdm
 
 parser = ArgumentParser()
-parser.add_argument("--model_type", type=str, choices=["GAT", "GCN", "AGAIN", "ADW"])
+parser.add_argument(
+    "--model_type", type=str, choices=["GAT", "GCN", "AGAIN", "ADW", "KCN"]
+)
 parser.add_argument("--max_epochs", type=int, default=150)
 parser.add_argument("--location", type=str)
 parser.add_argument("--log_step", type=int, default=50)
@@ -204,18 +205,22 @@ if __name__ == "__main__":
 
     trainer = (
         GNNTrainer(args.model_type, max_epochs=args.max_epochs)
-        if args.model_type in ["GCN", "GAT", "AGAIN"]
+        if args.model_type in ["GCN", "GAT", "AGAIN", "KCN"]
         else StatisticInterpTrainer(ADW(n_neighbors=20, cdd=60, m=4))
     )
-
-    logs = {
-        args.model_type: {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
-    }
+    output_dir = f"outputs_{args.location}_sparse"
+    if os.path.exists(os.path.join(output_dir, args.model_type, "logs.json")):
+        with open(os.path.join(output_dir, args.model_type, "logs.json"),'r') as f:
+            logs=json.load(f)
+    else:
+        logs = {
+            args.model_type: {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
+        }
 
     device = torch.device("cuda")
 
     sparsities = ["10%", "20%", "30%", "40%", "50%"] * len(dataset.raw_file_names)
-    output_dir = f"outputs_{args.location}_sparse"
+    
     for sparsity in sparsities[:5]:
         os.makedirs(
             os.path.join(output_dir, args.model_type, sparsity),
@@ -224,18 +229,19 @@ if __name__ == "__main__":
     print("Done!")
 
     for i in tqdm(range(len(dataset.processed_file_names)), desc=args.model_type):
+        csv_path = os.path.join(
+            output_dir,
+            args.model_type,
+            sparsities[i],
+            f"{dataset.processed_file_names[i].split('.')[0]}.csv",
+        )
+        if os.path.exists(csv_path):
+            continue
         data = dataset[i].to(device)
         rmse, df = trainer.calculate(data)
         logs[args.model_type][sparsities[i]].append(rmse)
-        df.to_csv(
-            os.path.join(
-                output_dir,
-                args.model_type,
-                sparsities[i],
-                f"{dataset.processed_file_names[i].split('.')[0]}.csv",
-            ),
-            index=False,
-        )
+        
+        df.to_csv(csv_path,index=False,)
         if (i % args.log_step) == 0:
             with open(os.path.join(output_dir, args.model_type, "logs.json"), "w") as f:
                 json.dump(logs, f, indent=4)
