@@ -18,9 +18,9 @@ The methodologies used in this project are detailed below:
 
 # Modern Graph Neural Network Approaches
 
-- [ ] GAT (Graph Attention Networks)
-- [ ] GCN (Graph Convolutional Networks)
-- [ ] KCN (Kriging Convolutional Networks) https://ojs.aaai.org/index.php/AAAI/article/view/5716
+- [x] GAT (Graph Attention Networks)
+- [x] GCN (Graph Convolutional Networks)
+- [x] KCN (Kriging Convolutional Networks) https://ojs.aaai.org/index.php/AAAI/article/view/5716
 
 # todo list
 
