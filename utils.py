@@ -222,7 +222,7 @@ def read_new_zealand_data(
         header=None,
         names=["index", "lat", "lon", "elev", "obs", "CMORPH"],
         sep="\s+",
-        usecols=["lat", "lon", "elev", "obs"],
+        usecols=["lat", "lon", "elev", "obs","CMORPH"],
     )  # 空格长度不太一致
 
     if location == "all":

@@ -4,7 +4,7 @@ from models.interpolators import ADW, AGAIN, GATModel, GCNModel, KCN
 import numpy as np
 import pandas as pd
 from torch_geometric.data import Data
-from graph_datasets import SparseObsDataset
+from graph_datasets import RandomLeaveOneOutDataset
 from moran import LocalMoranIndex
 import os
 import json
@@ -211,53 +211,40 @@ parser.add_argument("--log_step", type=int, default=50)
 if __name__ == "__main__":
     args = parser.parse_args()
     print("Initializing……")
-    dataset = SparseObsDataset("dataset", f"sparse_{args.location}", args.location)
+    dataset = RandomLeaveOneOutDataset("dataset", f"random_{args.location}", args.location)
 
     trainer = (
         GNNTrainer(args.model_type, max_epochs=args.max_epochs)
         if args.model_type in ["GCN", "GAT", "AGAIN", "KCN"]
         else StatisticInterpTrainer(ADW(n_neighbors=20, cdd=60, m=4))
     )
-    output_dir = f"outputs_{args.location}_sparse"
+    output_dir = f"outputs_{args.location}_random"
     if os.path.exists(os.path.join(output_dir, args.model_type, "logs.json")):
         with open(os.path.join(output_dir, args.model_type, "logs.json"), "r") as f:
             logs = json.load(f)
     else:
-        logs = {
-            args.model_type: {"10%": [], "20%": [], "30%": [], "40%": [], "50%": []},
-        }
+        logs = {}
 
     device = torch.device("cuda")
-
-    sparsities = ["10%", "20%", "30%", "40%", "50%"] * len(dataset.raw_file_names)
-
-    for sparsity in sparsities[:5]:
-        os.makedirs(
-            os.path.join(output_dir, args.model_type, sparsity),
-            exist_ok=True,
-        )
-    print("Done!")
-
+    os.makedirs(
+        os.path.join(output_dir, args.model_type),
+        exist_ok=True,
+    )
+    rmse_list=[]
     for i in tqdm(range(len(dataset.processed_file_names)), desc=args.model_type):
-        csv_path = os.path.join(
-            output_dir,
-            args.model_type,
-            sparsities[i],
-            f"{dataset.processed_file_names[i].split('.')[0]}.csv",
-        )
-        if os.path.exists(csv_path):
-            continue
         data = dataset[i].to(device)
         rmse, df = trainer.calculate(data)
-        logs[args.model_type][sparsities[i]].append(rmse)
-
-        df.to_csv(
-            csv_path,
-            index=False,
-        )
-        if (i % args.log_step) == 0:
+        rmse_list.append(rmse)
+        if i%50==0 and i!=0:
+            logs[f"{dataset.processed_file_names[i-1].split('_')[0]}.dat"]={
+        "test_rmse_loss_mean": np.mean(rmse_list),
+        "test_rmse_loss_std": np.std(rmse_list,ddof=0),
+            },
+            rmse_list.clear()
             with open(os.path.join(output_dir, args.model_type, "logs.json"), "w") as f:
                 json.dump(logs, f, indent=4)
 
-    with open(os.path.join(output_dir, args.model_type, "logs.json"), "w") as f:
-        json.dump(logs, f, indent=4)
+   
+        
+        
+

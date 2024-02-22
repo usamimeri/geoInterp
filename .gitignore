@@ -132,20 +132,12 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
-
 /data
-
 test.ipynb
-
 PyCharm
-
 DW计划
-
 docs
 dataset
-
 AGAIN_module.py
-
 outputs*/
-
 KCN
